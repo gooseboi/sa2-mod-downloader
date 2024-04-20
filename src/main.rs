@@ -223,7 +223,8 @@ async fn main() -> Result<()> {
                 SetForegroundColor(Color::Red),
                 crossterm::style::Print("did not match"),
                 ResetColor
-            ).wrap_err("Failed printing hash error")?;
+            )
+            .wrap_err("Failed printing hash error")?;
             stderr.flush().wrap_err("Failed flushing stderr")?;
             eprintln!(
                 "Expected {}, found {}",
