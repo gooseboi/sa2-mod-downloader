@@ -252,14 +252,14 @@ async fn main() -> Result<()> {
             .write(true)
             .create(true)
             .truncate(true)
-            .open(fname)
+            .open(&fname)
             .await
             .wrap_err_with(|| format!("Failed opening output file for {name}"))?;
-        println!("Writing file for {name}");
+        println!("Writing file for {stylized_name} to {fname}");
         file.write_all(&bytes)
             .await
             .wrap_err("Failed writing response to file")?;
-        println!("Wrote file for {name}");
+        println!("Wrote file for {stylized_name}");
         println!();
     }
 
