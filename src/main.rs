@@ -8,7 +8,7 @@
 use camino::Utf8PathBuf;
 use clap::Parser;
 use color_eyre::{
-    eyre::{bail, ContextCompat, WrapErr},
+    eyre::{ContextCompat, WrapErr},
     Result,
 };
 use crossterm::{
