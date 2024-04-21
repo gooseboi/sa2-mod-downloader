@@ -5,10 +5,10 @@
     clippy::unwrap_used
 )]
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use color_eyre::{
-    eyre::{ContextCompat, WrapErr},
+    eyre::{bail, ContextCompat, WrapErr},
     Result,
 };
 use crossterm::{
@@ -245,7 +245,74 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        let fname = output_path.join(name).with_extension(file_ext);
+        let mod_name;
+        match file_ext.as_str() {
+            "zip" => {
+                // TODO: spawn_blocking?
+                let bytes = std::io::Cursor::new(&bytes);
+                let mut zip_archive =
+                    zip::ZipArchive::new(bytes).wrap_err("Failed opening zipfile")?;
+
+                let mut top_level_dir = None;
+                for i in 0..zip_archive.len() {
+                    let file = zip_archive.by_index(i)?;
+                    let p = Utf8Path::new(file.name());
+                    if file.is_dir() && p.components().count() == 1 {
+                        top_level_dir = Some(p.to_path_buf());
+                        break;
+                    }
+                }
+
+                let top_level_dir = top_level_dir.wrap_err("No top level directory in zip file")?;
+                let ini_path = top_level_dir.join("mod.ini");
+
+                let mut mod_ini = zip_archive
+                    .by_name(&ini_path.to_string())
+                    .wrap_err("Failed loading mod ini")?;
+                let mod_ini = ini::Ini::read_from(&mut mod_ini)
+                    .wrap_err("Failed reading data from mod ini")?;
+                mod_name = mod_ini
+                    .general_section()
+                    .get("Name")
+                    .wrap_err("ini file had no name property")?
+                    .to_owned();
+            }
+            "7z" => {
+                let t = tempfile::tempdir().wrap_err("Failed creating a temporary directory")?;
+                let temp_path = Utf8Path::from_path(t.path()).expect("temp path should be utf-8");
+                let bytes = std::io::Cursor::new(&bytes);
+                sevenz_rust::decompress(bytes, t.path())
+                    .wrap_err("Failed extracting 7z archive")?;
+
+                let Some(top_level_dir) = temp_path
+                    .read_dir_utf8()
+                    .wrap_err("Failed reading temp directory contents")?
+                    .next()
+                else {
+                    bail!("there should be a top level dir in the 7z archive");
+                };
+
+                let top_level_dir = top_level_dir
+                    .wrap_err("Failed reading directory entry")?
+                    .path()
+                    .to_path_buf();
+                let ini_path = top_level_dir.join("mod.ini");
+                let mut mod_ini = std::fs::OpenOptions::new()
+                    .read(true)
+                    .open(ini_path)
+                    .wrap_err("Failed opening mod ini")?;
+                let mod_ini = ini::Ini::read_from(&mut mod_ini)
+                    .wrap_err("Failed reading data from mod ini")?;
+                mod_name = mod_ini
+                    .general_section()
+                    .get("Name")
+                    .wrap_err("ini file had no name property")?
+                    .to_owned();
+            }
+            _ => bail!("Unknown file type {file_ext}"),
+        }
+
+        let fname = output_path.join(mod_name).with_extension(file_ext);
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
