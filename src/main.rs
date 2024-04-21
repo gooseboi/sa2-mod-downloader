@@ -72,6 +72,18 @@ pub fn size_str(size: u64) -> String {
     }
 }
 
+fn get_file_extension(bytes: &[u8]) -> Option<String> {
+    if bytes[0..6] == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] {
+        Some("7z".to_owned())
+    } else if (bytes[0..3] == [0x50, 0x4B, 0x03])
+        && (bytes[3] == 0x04 || bytes[3] == 0x06 || bytes[3] == 0x08)
+    {
+        Some("zip".to_owned())
+    } else {
+        None
+    }
+}
+
 async fn download_file(
     client: &reqwest_middleware::ClientWithMiddleware,
     url: &Url,
@@ -87,37 +99,6 @@ async fn download_file(
         .send()
         .await
         .wrap_err("Failed requesting mod zipfile")?;
-
-    let extension = {
-        match res.headers().get("Content-Type") {
-            Some(content_type) => {
-                let content_type = std::str::from_utf8(content_type.as_bytes())
-                    .wrap_err("Content type was not UTF-8")?;
-                match content_type {
-                    "application/zip" => "zip",
-                    "application/x-7z-compressed" => "7z",
-                    _ => bail!("Unsupported content type {content_type}"),
-                }
-                .to_owned()
-            }
-            None => {
-                lazy_static::lazy_static! {
-                    static ref CONTENT_DISPOSITION_RE: regex::Regex = regex::Regex::new(r"...").expect("Regex is valid");
-                };
-
-                let disposition = res
-                    .headers()
-                    .get("Content-Disposition")
-                    .wrap_err("Failed to get content filename")?
-                    .as_bytes();
-                let disposition = std::str::from_utf8(disposition)
-                    .wrap_err("Content disposition was not UTF-8")?;
-                disposition.find("filename=");
-
-                todo!()
-            }
-        }
-    };
 
     let total_size = res
         .content_length()
@@ -148,6 +129,9 @@ async fn download_file(
         "Successfully download {} from {}",
         stylized_name, url
     ));
+
+    let extension =
+        get_file_extension(&bytes).wrap_err("Failed finding file extension for file")?;
 
     stdout
         .execute(SetForegroundColor(Color::Green))
