@@ -1,0 +1,54 @@
+hash-format = "sha256"
+order = [
+  "Amy Backless Dress",
+  "Better Radar",
+  "Cutscene Revamp",
+]
+
+[[mods]]
+name = "HedgePanel"
+url = "https://files.gamebanana.com/mods/hedgepanel_5d293.zip"
+hash = "824bb9d50d09988e3dadf1703f4604116d21610af834117426afcbce095f1793"
+
+[mods.opts]
+opt = true
+
+[[mods]]
+name = "Amy Backless Dress"
+url = "https://files.gamebanana.com/mods/amy_backless_dress_v21.7z"
+hash = "a83cbffd45dafd0497f2a8d5c43a6c17da3fb39477f6aa2a1b48b480acd04f4c"
+
+[[mods]]
+name = "Better Radar"
+url = "https://github.com/kellsnc/SA2BetterRadar/releases/download/v1.2.0/SA2BetterRadar.7z"
+hash = "b8f790a8cb3741e79d0380b7d9ef2b7b66ff55134a070742c1cfc1ef400d7cae"
+
+[[mods]]
+name = "Cutscene Revamp"
+url = "https://files.gamebanana.com/mods/cutscene_revamp_4e10e.zip"
+hash = "fe2daca237d8ecf637c2e6726e65502321488fd8069d0d0bac92441fc32d87eb"
+
+[[mods]]
+name = "No Battle"
+url = "https://gamebanana.com/dl/408434"
+hash = "83396aea85d37e28e0aafa614f8caf54befe5eb349a8ada1cbd28eff1773a418"
+
+[[mods]]
+name = "Dreamcast Characters"
+url = "https://gamebanana.com/dl/736160"
+hash = "0de0d592c34c7e81093784578576ed2647775f622c1ca3eae45372a844a85c5b"
+
+[[mods]]
+name = "Dreamcast Mech Grunts"
+url = "https://github.com/shaddatic/sa2b-dc-mech-grunts/releases/download/v3.0/dc-mech-grunts.7z"
+hash = "b1004fb866877a91dee44fe30bf28c586b0c681b25587f0e6fd512177ed1efad"
+
+[[mods]]
+name = "Eggman Lighting Fix"
+url = "https://gamebanana.com/dl/852079"
+hash = "cb8d3458a46d4234789f54f3d046b9ad74a984353ade41375e64e6098d1a7e57"
+
+[[mods]]
+name = "HD GUI"
+url = "https://gamebanana.com/dl/409120"
+hash = "c0db92881d926a70f86b521439ed15c1cfaf16fce8ce509c787287a52796e8fe"
