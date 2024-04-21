@@ -149,6 +149,47 @@ async fn download_file(
     Ok((extension, bytes))
 }
 
+fn validate_file_hash(bytes: &[u8], hash: &str, stylized_name: &crossterm::style::StyledContent<String>) -> Result<bool> {
+    let mut stdout = std::io::stdout();
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let computed_hash = hasher.finalize();
+    let computed_hash = format!("{computed_hash:016x}");
+    if hash != &computed_hash {
+        let mut stderr = std::io::stderr();
+        crossterm::queue!(
+            stderr,
+            SetForegroundColor(Color::Red),
+            crossterm::style::Print(format!("Computed hash for {stylized_name} ")),
+            SetForegroundColor(Color::Red),
+            crossterm::style::Print("did not match"),
+            ResetColor
+        )
+            .wrap_err("Failed printing hash error")?;
+        stderr.flush().wrap_err("Failed flushing stderr")?;
+        eprintln!(
+            "Expected {}, found {}",
+            hash.bold().magenta(),
+            computed_hash.bold().magenta()
+        );
+        Ok(false)
+    } else {
+        stdout
+            .execute(SetForegroundColor(Color::Green))
+            .wrap_err("Failed setting color")?;
+        print!("Hash validation for ");
+        print!("{stylized_name} ");
+        stdout
+            .execute(SetForegroundColor(Color::Green))
+            .wrap_err("Failed setting color")?;
+        println!("succeeded");
+        stdout
+            .execute(ResetColor)
+            .wrap_err("Failed setting color")?;
+        Ok(true)
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -184,7 +225,6 @@ async fn main() -> Result<()> {
     {
         let stylized_name = name.clone().italic().cyan();
         let stylized_url = url.as_str().italic().cyan();
-        let mut stdout = std::io::stdout();
         println!(
             "Downloading mod file for {stylized_name}, url = {}",
             stylized_url,
@@ -194,42 +234,9 @@ async fn main() -> Result<()> {
             .await
             .wrap_err("Failed downloading file")?;
 
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let computed_hash = hasher.finalize();
-        let computed_hash = format!("{computed_hash:016x}");
-        if hash != &computed_hash {
-            let mut stderr = std::io::stderr();
-            crossterm::queue!(
-                stderr,
-                SetForegroundColor(Color::Red),
-                crossterm::style::Print(format!("Computed hash for {stylized_name} ")),
-                SetForegroundColor(Color::Red),
-                crossterm::style::Print("did not match"),
-                ResetColor
-            )
-            .wrap_err("Failed printing hash error")?;
-            stderr.flush().wrap_err("Failed flushing stderr")?;
-            eprintln!(
-                "Expected {}, found {}",
-                hash.clone().bold().magenta(),
-                computed_hash.bold().magenta()
-            );
-            eprintln!("Skipping...");
+        if !validate_file_hash(&bytes, &hash, &stylized_name).wrap_err("Failed verifying the file hash")? {
+            eprintln!("Skipping");
             continue;
-        } else {
-            stdout
-                .execute(SetForegroundColor(Color::Green))
-                .wrap_err("Failed setting color")?;
-            print!("Hash validation for ");
-            print!("{stylized_name} ");
-            stdout
-                .execute(SetForegroundColor(Color::Green))
-                .wrap_err("Failed setting color")?;
-            println!("succeeded");
-            stdout
-                .execute(ResetColor)
-                .wrap_err("Failed setting color")?;
         }
 
         let fname = output_path.join(name).with_extension(file_ext);
