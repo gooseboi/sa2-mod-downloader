@@ -149,7 +149,11 @@ async fn download_file(
     Ok((extension, bytes))
 }
 
-fn validate_file_hash(bytes: &[u8], hash: &str, stylized_name: &crossterm::style::StyledContent<String>) -> Result<bool> {
+fn validate_file_hash(
+    bytes: &[u8],
+    hash: &str,
+    stylized_name: &crossterm::style::StyledContent<String>,
+) -> Result<bool> {
     let mut stdout = std::io::stdout();
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
@@ -165,7 +169,7 @@ fn validate_file_hash(bytes: &[u8], hash: &str, stylized_name: &crossterm::style
             crossterm::style::Print("did not match"),
             ResetColor
         )
-            .wrap_err("Failed printing hash error")?;
+        .wrap_err("Failed printing hash error")?;
         stderr.flush().wrap_err("Failed flushing stderr")?;
         eprintln!(
             "Expected {}, found {}",
@@ -234,7 +238,9 @@ async fn main() -> Result<()> {
             .await
             .wrap_err("Failed downloading file")?;
 
-        if !validate_file_hash(&bytes, &hash, &stylized_name).wrap_err("Failed verifying the file hash")? {
+        if !validate_file_hash(&bytes, &hash, &stylized_name)
+            .wrap_err("Failed verifying the file hash")?
+        {
             eprintln!("Skipping");
             continue;
         }
