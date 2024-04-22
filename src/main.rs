@@ -19,7 +19,10 @@ use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, io::Write as _};
+use std::{
+    collections::HashMap,
+    io::{Read as _, Write as _},
+};
 use tokio::{fs, io::AsyncWriteExt};
 use url::Url;
 
@@ -193,72 +196,105 @@ fn validate_file_hash(
     }
 }
 
-fn get_mod_name(file_ext: &str, bytes: &[u8]) -> Result<String> {
-        match file_ext {
-            "zip" => {
-                // TODO: spawn_blocking?
-                let bytes = std::io::Cursor::new(&bytes);
-                let mut zip_archive =
-                    zip::ZipArchive::new(bytes).wrap_err("Failed opening zipfile")?;
+fn extract_mod(file_ext: &str, bytes: &[u8]) -> Result<tempfile::TempDir> {
+    let tempdir = tempfile::tempdir().wrap_err("Failed creating temporary directory")?;
+    let temp_path = Utf8Path::from_path(tempdir.path()).wrap_err("temp path was not UTF-8")?;
+    match file_ext {
+        "zip" => {
+            let bytes = std::io::Cursor::new(&bytes);
+            let mut zip_archive = zip::ZipArchive::new(bytes).wrap_err("Failed opening zipfile")?;
 
-                let mut top_level_dir = None;
-                for i in 0..zip_archive.len() {
-                    let file = zip_archive.by_index(i)?;
-                    let p = Utf8Path::new(file.name());
-                    if file.is_dir() && p.components().count() == 1 {
-                        top_level_dir = Some(p.to_path_buf());
-                        break;
-                    }
+            for i in 0..zip_archive.len() {
+                let mut zip_file = zip_archive.by_index(i)?;
+                let file_path = temp_path.join(zip_file.name());
+                if zip_file.is_dir() {
+                    std::fs::create_dir_all(file_path)
+                        .wrap_err("Failed creating directory in temp directory")?;
+                } else if zip_file.is_file() {
+                    let mut file = std::fs::OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(file_path)
+                        .wrap_err("Failed opening file in temp directory")?;
+                    let mut bytes = vec![];
+                    zip_file
+                        .read_to_end(&mut bytes)
+                        .wrap_err("Failed reading from zip file")?;
+                    file.write_all(&bytes)
+                        .wrap_err("Failed writing file to temp directory")?;
+                }
+            }
+        }
+        "7z" => {
+            let bytes = std::io::Cursor::new(&bytes);
+            sevenz_rust::decompress(bytes, temp_path).wrap_err("Failed extracting 7z archive")?;
+        }
+        _ => bail!("Unsupported extension for extraction: {file_ext}"),
+    }
+
+    let entries: Result<Vec<_>, std::io::Error> = std::fs::read_dir(temp_path)
+        .wrap_err("Failed reading directory")?
+        .collect();
+    let entries = entries.wrap_err("Failed reading directory entries")?;
+    match entries.len() {
+        0 => bail!("Empty archive file"),
+        1 => {
+            if entries[0]
+                .metadata()
+                .wrap_err("Failed statting entry")?
+                .is_dir()
+            {
+                let tempdir =
+                    tempfile::tempdir().wrap_err("Failed creating temporary directory")?;
+                let temp_path =
+                    Utf8Path::from_path(tempdir.path()).wrap_err("temp path was not UTF-8")?;
+
+                for entry in entries[0]
+                    .path()
+                    .read_dir()
+                    .wrap_err("Failed reading directory")?
+                {
+                    let entry = entry.wrap_err("Failed reading directory entry")?;
+                    let old_path = entry.path();
+                    let old_path =
+                        Utf8Path::from_path(&old_path).wrap_err("File's path was not UTF-8")?;
+                    let file_name = old_path
+                        .file_name()
+                        .wrap_err("Cannot move file without a name")?;
+                    let new_path = temp_path.join(file_name);
+                    std::fs::rename(entry.path(), new_path)
+                        .wrap_err("Failed moving file to new temp folder")?;
                 }
 
-                let top_level_dir = top_level_dir.wrap_err("No top level directory in zip file")?;
-                let ini_path = top_level_dir.join("mod.ini");
-
-                let mut mod_ini = zip_archive
-                    .by_name(ini_path.as_ref())
-                    .wrap_err("Failed loading mod ini")?;
-                let mod_ini = ini::Ini::read_from(&mut mod_ini)
-                    .wrap_err("Failed reading data from mod ini")?;
-                Ok(mod_ini
-                    .general_section()
-                    .get("Name")
-                    .wrap_err("ini file had no name property")?
-                    .to_owned())
+                Ok(tempdir)
+            } else {
+                bail!("Invalid mod directory layout, only one file inside");
             }
-            "7z" => {
-                let t = tempfile::tempdir().wrap_err("Failed creating a temporary directory")?;
-                let temp_path = Utf8Path::from_path(t.path()).expect("temp path should be utf-8");
-                let bytes = std::io::Cursor::new(&bytes);
-                sevenz_rust::decompress(bytes, t.path())
-                    .wrap_err("Failed extracting 7z archive")?;
-
-                let Some(top_level_dir) = temp_path
-                    .read_dir_utf8()
-                    .wrap_err("Failed reading temp directory contents")?
-                    .next()
-                else {
-                    bail!("there should be a top level dir in the 7z archive");
-                };
-
-                let top_level_dir = top_level_dir
-                    .wrap_err("Failed reading directory entry")?
-                    .path()
-                    .to_path_buf();
-                let ini_path = top_level_dir.join("mod.ini");
-                let mut mod_ini = std::fs::OpenOptions::new()
-                    .read(true)
-                    .open(ini_path)
-                    .wrap_err("Failed opening mod ini")?;
-                let mod_ini = ini::Ini::read_from(&mut mod_ini)
-                    .wrap_err("Failed reading data from mod ini")?;
-                Ok(mod_ini
-                    .general_section()
-                    .get("Name")
-                    .wrap_err("ini file had no name property")?
-                    .to_owned())
-            }
-            _ => bail!("Unknown file type {file_ext}"),
         }
+        _ => {
+            if entries.into_iter().any(|e| e.file_name() == "mod.ini") {
+                bail!("Invalid mod, no mod.ini");
+            } else {
+                Ok(tempdir)
+            }
+        }
+    }
+}
+
+fn get_mod_name(path: &Utf8Path) -> Result<String> {
+    let ini_path = path.join("mod.ini");
+
+    let mut mod_ini = std::fs::OpenOptions::new()
+        .read(true)
+        .write(false)
+        .open(ini_path)
+        .wrap_err("Failed loading mod ini")?;
+    let mod_ini = ini::Ini::read_from(&mut mod_ini).wrap_err("Failed reading data from mod ini")?;
+    Ok(mod_ini
+        .general_section()
+        .get("Name")
+        .wrap_err("ini file had no name property")?
+        .to_owned())
 }
 
 #[tokio::main]
@@ -296,9 +332,7 @@ async fn main() -> Result<()> {
     {
         let stylized_name = name.clone().italic().cyan();
         let stylized_url = url.as_str().italic().cyan();
-        println!(
-            "Downloading mod file for {stylized_name}, url = {stylized_url}",
-        );
+        println!("Downloading mod file for {stylized_name}, url = {stylized_url}",);
 
         let (file_ext, bytes) = download_file(&client, url, name)
             .await
@@ -311,7 +345,10 @@ async fn main() -> Result<()> {
             continue;
         }
 
-        let mod_name = get_mod_name(&file_ext, &bytes).wrap_err("Failed getting mod name")?;
+        let mod_dir = extract_mod(&file_ext, &bytes).wrap_err("Failed extracting mod files")?;
+        let mod_path = Utf8Path::from_path(mod_dir.path()).wrap_err("Temp dir was not UTF-8")?;
+
+        let mod_name = get_mod_name(mod_path).wrap_err("Failed getting mod name")?;
 
         let fname = output_path.join(mod_name).with_extension(file_ext);
         let mut file = fs::OpenOptions::new()
