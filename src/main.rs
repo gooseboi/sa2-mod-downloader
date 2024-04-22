@@ -303,6 +303,25 @@ fn get_mod_name(path: &Utf8Path) -> Result<String> {
         .to_owned())
 }
 
+fn _write_output(
+    output_path: &Utf8Path,
+    mod_name: &str,
+    _mod_path: &Utf8Path,
+    file_ext: &str,
+) -> Result<()> {
+    let _stylized_name = mod_name.italic().cyan();
+
+    let fname = output_path.join(mod_name).with_extension(file_ext);
+    let _file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(fname)
+        .wrap_err_with(|| format!("Failed opening output file for {mod_name}"))?;
+
+    todo!()
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -356,19 +375,6 @@ async fn main() -> Result<()> {
 
         let mod_name = get_mod_name(mod_path).wrap_err("Failed getting mod name")?;
 
-        let fname = output_path.join(mod_name).with_extension(file_ext);
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&fname)
-            .await
-            .wrap_err_with(|| format!("Failed opening output file for {name}"))?;
-        println!("Writing file for {stylized_name} to {fname}");
-        file.write_all(&bytes)
-            .await
-            .wrap_err("Failed writing response to file")?;
-        println!("Wrote file for {stylized_name}");
         println!();
     }
 
