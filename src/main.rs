@@ -213,15 +213,22 @@ fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::Te
 
             for i in 0..zip_archive.len() {
                 let mut zip_file = zip_archive.by_index(i)?;
-                let file_path = temp_path.join(zip_file.name());
+                let rel_path = Utf8Path::new(zip_file.name());
+                if let Some(containing_dir) = rel_path.parent() {
+                    let containing_dir = temp_path.join(containing_dir);
+                    fs::create_dir_all(containing_dir)
+                        .wrap_err("Failed creating directory in temp directory")?;
+                }
+
+                let full_path = temp_path.join(rel_path);
                 if zip_file.is_dir() {
-                    fs::create_dir_all(file_path)
+                    fs::create_dir_all(full_path)
                         .wrap_err("Failed creating directory in temp directory")?;
                 } else if zip_file.is_file() {
                     let mut file = fs::OpenOptions::new()
                         .create_new(true)
                         .write(true)
-                        .open(file_path)
+                        .open(full_path)
                         .wrap_err("Failed opening file in temp directory")?;
                     let mut bytes = vec![];
                     zip_file
