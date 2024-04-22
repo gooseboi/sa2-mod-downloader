@@ -24,6 +24,7 @@ use std::{
     collections::HashMap,
     io::{Read as _, Write as _},
 };
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use url::Url;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -102,15 +103,80 @@ fn get_file_extension(bytes: &[u8]) -> Option<ArchiveFileType> {
     }
 }
 
+async fn get_file_from_cache(cache_dir: &Utf8Path, url: &Url) -> Result<Option<Vec<u8>>> {
+    let encoded_url =
+        percent_encoding::utf8_percent_encode(url.as_str(), percent_encoding::NON_ALPHANUMERIC)
+            .collect::<String>();
+    let file_path = cache_dir.join(encoded_url);
+    if file_path.exists() {
+        let mut file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .write(false)
+            .open(file_path)
+            .await
+            .wrap_err("Failed opening cache file")?;
+        let mut bytes = vec![];
+        file.read_to_end(&mut bytes)
+            .await
+            .wrap_err("Failed reading file contents")?;
+        Ok(Some(bytes))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn add_file_to_cache(cache_dir: &Utf8Path, url: &Url, bytes: &[u8]) -> Result<()> {
+    let encoded_url =
+        percent_encoding::utf8_percent_encode(url.as_str(), percent_encoding::NON_ALPHANUMERIC)
+            .collect::<String>();
+    let file_path = cache_dir.join(encoded_url);
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .truncate(true)
+        .open(file_path)
+        .await
+        .wrap_err("Failed opening cache file for writing")?;
+
+    file.write_all(bytes)
+        .await
+        .wrap_err("Failed writing content to cache file")?;
+
+    Ok(())
+}
+
 async fn download_file(
     client: &reqwest_middleware::ClientWithMiddleware,
     url: &Url,
     name: &str,
-) -> Result<(ArchiveFileType, Vec<u8>)> {
+    cache_dir: &Utf8Path,
+) -> Result<(ArchiveFileType, Vec<u8>, bool)> {
     let mut stdout = std::io::stdout();
 
     let stylized_name = name.italic().cyan();
     let stylized_url = url.as_str().italic().cyan();
+
+    if let Some(bytes) = get_file_from_cache(cache_dir, url)
+        .await
+        .wrap_err("Failed loading file from cache")?
+    {
+        let file_type =
+            get_file_extension(&bytes).wrap_err("Failed finding file extension for file")?;
+        crossterm::queue!(
+            stdout,
+            SetForegroundColor(Color::Green),
+            crossterm::style::Print(format!("Using cache file for {stylized_name}: ")),
+            crossterm::style::Print(format!(
+                "url = {}, size = {}\n",
+                stylized_url,
+                size_str(bytes.len() as u64).italic().cyan()
+            ))
+        )
+        .wrap_err("Failed writing success message")?;
+        stdout.flush().wrap_err("Failed flushing stdout")?;
+        return Ok((file_type, bytes, true));
+    }
 
     let res = client
         .get(url.clone())
@@ -147,23 +213,23 @@ async fn download_file(
         "Successfully download {stylized_name} from {stylized_url}",
     ));
 
-    let extension =
+    let file_type =
         get_file_extension(&bytes).wrap_err("Failed finding file extension for file")?;
 
-    stdout
-        .execute(SetForegroundColor(Color::Green))
-        .wrap_err("Failed setting color")?;
-    print!("Successfully downloaded file for {stylized_name}: ");
-    stdout
-        .execute(ResetColor)
-        .wrap_err("Failed setting color")?;
-    println!(
-        "url = {}, size = {}",
-        stylized_url,
-        size_str(bytes.len() as u64).italic().cyan()
-    );
+    crossterm::queue!(
+        stdout,
+        SetForegroundColor(Color::Green),
+        crossterm::style::Print(format!("Successfully downloaded file for {stylized_name} ")),
+        crossterm::style::Print(format!(
+            "url = {}, size = {}\n",
+            stylized_url,
+            size_str(bytes.len() as u64).italic().cyan()
+        ))
+    )
+    .wrap_err("Failed writing success message")?;
+    stdout.flush().wrap_err("Failed flushing stdout")?;
 
-    Ok((extension, bytes))
+    Ok((file_type, bytes, false))
 }
 
 fn validate_file_hash(
@@ -433,6 +499,14 @@ async fn main() -> Result<()> {
         .await
         .wrap_err("Failed creating output directory")?;
 
+    let cache_dir = std::env::var("XDG_CACHE_HOME").unwrap_or("~/.cache".to_owned());
+    let cache_dir = Utf8PathBuf::from(cache_dir);
+    let cache_dir = cache_dir.join("sa2_mod_downloader");
+
+    tokio::fs::create_dir_all(&cache_dir)
+        .await
+        .wrap_err("Failed creating cache directory")?;
+
     let client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new())
         .with(reqwest_retry::RetryTransientMiddleware::new_with_policy(
             reqwest_retry::policies::ExponentialBackoff::builder().build_with_max_retries(3),
@@ -455,15 +529,26 @@ async fn main() -> Result<()> {
             "Downloading mod file ({i}/{mod_total}) for {stylized_name}, url = {stylized_url}",
         );
 
-        let (file_ext, bytes) = download_file(&client, url, name)
+        let (file_ext, bytes, is_local) = download_file(&client, url, name, &cache_dir)
             .await
             .wrap_err("Failed downloading file")?;
 
         if !validate_file_hash(&bytes, hash, &stylized_name)
             .wrap_err("Failed verifying the file hash")?
         {
+            if is_local {
+                todo!("Invalidate cache after bad local file");
+            }
             eprintln!("Skipping");
+            println!();
+            println!();
             continue;
+        }
+
+        if !is_local {
+            add_file_to_cache(&cache_dir, url, &bytes)
+                .await
+                .wrap_err_with(|| format!("Failed adding mod for url {url} into cache"))?;
         }
 
         let mod_dir = extract_mod(&file_ext, &bytes).wrap_err("Failed extracting mod files")?;
@@ -471,6 +556,8 @@ async fn main() -> Result<()> {
 
         if !validate_manifest(name, mod_path).wrap_err("Failed validating mod manifest")? {
             eprintln!("Skipping");
+            println!();
+            println!();
             continue;
         }
 
