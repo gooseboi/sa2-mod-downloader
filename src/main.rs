@@ -63,7 +63,7 @@ enum ArchiveFileType {
 
 #[allow(clippy::cast_precision_loss)]
 #[must_use]
-pub fn size_str(size: u64) -> String {
+fn size_str(size: u64) -> String {
     const BYTE_SIZE: u64 = 1024;
 
     if size < BYTE_SIZE {
@@ -80,6 +80,14 @@ pub fn size_str(size: u64) -> String {
     } else {
         "You really shouldn't be serving files that big with this tool...".to_owned()
     }
+}
+
+#[must_use]
+fn sha256_hash(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let computed_hash = hasher.finalize();
+    format!("{computed_hash:016x}")
 }
 
 fn get_file_extension(bytes: &[u8]) -> Option<ArchiveFileType> {
@@ -164,10 +172,7 @@ fn validate_file_hash(
     stylized_name: &crossterm::style::StyledContent<String>,
 ) -> Result<bool> {
     let mut stdout = std::io::stdout();
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let computed_hash = hasher.finalize();
-    let computed_hash = format!("{computed_hash:016x}");
+    let computed_hash = sha256_hash(bytes);
     if hash == computed_hash {
         stdout
             .execute(SetForegroundColor(Color::Green))
@@ -310,6 +315,84 @@ fn get_mod_name(path: &Utf8Path) -> Result<String> {
         .to_owned())
 }
 
+fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> {
+    let stylized_name = mod_name.italic().cyan();
+
+    let manifest_path = mod_path.join("mod.manifest");
+    if !manifest_path
+        .try_exists()
+        .wrap_err("Could not check if manifest exists")?
+    {
+        return Ok(true);
+    }
+
+    let manifest =
+        fs::read_to_string(manifest_path).wrap_err("Failed reading from manifest file")?;
+    let lines = manifest.lines();
+    for line in lines {
+        let mut it = line.split('\t');
+        let Some(name) = it.next() else {
+            bail!("Line {line} had no name field");
+        };
+        let name = name.replace('\\', "/");
+        let Some(byte_count) = it.next() else {
+            bail!("Line {line} had no bytes field");
+        };
+        let byte_count = byte_count
+            .parse::<usize>()
+            .wrap_err_with(|| format!("Byte count for {name} was not a number"))?;
+        let Some(hash) = it.next() else {
+            bail!("Line {line} had no hash field");
+        };
+
+        let file_path = mod_path.join(&name);
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(false)
+            .open(file_path)
+            .wrap_err_with(|| format!("Failed opening {name}"))?;
+        let mut file_contents = vec![];
+        file.read_to_end(&mut file_contents)
+            .wrap_err_with(|| format!("Failed reading file contents for {name}"))?;
+
+        if file_contents.len() != byte_count {
+            return Ok(false);
+        }
+
+        let computed_hash = sha256_hash(&file_contents);
+        if computed_hash != hash {
+            let mut stderr = std::io::stderr();
+            crossterm::queue!(
+                stderr,
+                SetForegroundColor(Color::Red),
+                crossterm::style::Print(format!(
+                    "Failed validating manifest for {stylized_name} at {name}"
+                )),
+                SetForegroundColor(Color::Red),
+                crossterm::style::Print(format!("Expected {}, ", hash.bold().magenta())),
+                SetForegroundColor(Color::Red),
+                crossterm::style::Print(format!("got {}", computed_hash.clone().bold().magenta())),
+            )
+            .wrap_err("Failed printing hash error")?;
+            stderr.flush().wrap_err("Failed flushing stderr")?;
+            return Ok(false);
+        }
+    }
+
+    let mut stdout = std::io::stdout();
+    crossterm::queue!(
+        stdout,
+        SetForegroundColor(Color::Green),
+        crossterm::style::Print(format!("Manifest validation for {stylized_name} ")),
+        SetForegroundColor(Color::Green),
+        crossterm::style::Print("succeeded"),
+    )
+    .wrap_err("Failed printing success message")?;
+    stdout.flush().wrap_err("Failed flushing stdout")?;
+
+    Ok(true)
+}
+
 fn _write_output(
     output_path: &Utf8Path,
     mod_name: &str,
@@ -386,8 +469,14 @@ async fn main() -> Result<()> {
         let mod_dir = extract_mod(&file_ext, &bytes).wrap_err("Failed extracting mod files")?;
         let mod_path = Utf8Path::from_path(mod_dir.path()).wrap_err("Temp dir was not UTF-8")?;
 
+        if !validate_manifest(name, mod_path).wrap_err("Failed validating mod manifest")? {
+            eprintln!("Skipping");
+            continue;
+        }
+
         let mod_name = get_mod_name(mod_path).wrap_err("Failed getting mod name")?;
 
+        println!();
         println!();
     }
 
