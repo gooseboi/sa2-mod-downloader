@@ -350,21 +350,27 @@ async fn main() -> Result<()> {
         .await
         .wrap_err("Failed creating output directory")?;
 
-    let retry_policy =
-        reqwest_retry::policies::ExponentialBackoff::builder().build_with_max_retries(3);
     let client = reqwest_middleware::ClientBuilder::new(reqwest::Client::new())
         .with(reqwest_retry::RetryTransientMiddleware::new_with_policy(
-            retry_policy,
+            reqwest_retry::policies::ExponentialBackoff::builder().build_with_max_retries(3),
         ))
         .build();
 
-    for Mod {
-        url, name, hash, ..
-    } in &list.mods
+    let now = std::time::Instant::now();
+    let mod_total = list.mods.len();
+    for (
+        i,
+        Mod {
+            url, name, hash, ..
+        },
+    ) in list.mods.iter().enumerate()
     {
         let stylized_name = name.clone().italic().cyan();
         let stylized_url = url.as_str().italic().cyan();
-        println!("Downloading mod file for {stylized_name}, url = {stylized_url}",);
+        let i = i + 1;
+        println!(
+            "Downloading mod file ({i}/{mod_total}) for {stylized_name}, url = {stylized_url}",
+        );
 
         let (file_ext, bytes) = download_file(&client, url, name)
             .await
@@ -384,6 +390,13 @@ async fn main() -> Result<()> {
 
         println!();
     }
+
+    let time = now.elapsed();
+    println!(
+        "Finished downloading all mods. Downloaded a total of {} mods in {} secs",
+        list.mods.len(),
+        time.as_secs_f64()
+    );
 
     Ok(())
 }
