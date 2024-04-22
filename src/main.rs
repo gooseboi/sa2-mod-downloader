@@ -54,6 +54,13 @@ struct Cli {
     output: Utf8PathBuf,
 }
 
+#[derive(Debug)]
+#[non_exhaustive]
+enum ArchiveFileType {
+    Zip,
+    SevenZ,
+}
+
 #[allow(clippy::cast_precision_loss)]
 #[must_use]
 pub fn size_str(size: u64) -> String {
@@ -75,13 +82,13 @@ pub fn size_str(size: u64) -> String {
     }
 }
 
-fn get_file_extension(bytes: &[u8]) -> Option<String> {
+fn get_file_extension(bytes: &[u8]) -> Option<ArchiveFileType> {
     if bytes[0..6] == [0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C] {
-        Some("7z".to_owned())
+        Some(ArchiveFileType::SevenZ)
     } else if (bytes[0..3] == [0x50, 0x4B, 0x03])
         && (bytes[3] == 0x04 || bytes[3] == 0x06 || bytes[3] == 0x08)
     {
-        Some("zip".to_owned())
+        Some(ArchiveFileType::Zip)
     } else {
         None
     }
@@ -91,7 +98,7 @@ async fn download_file(
     client: &reqwest_middleware::ClientWithMiddleware,
     url: &Url,
     name: &str,
-) -> Result<(String, Vec<u8>)> {
+) -> Result<(ArchiveFileType, Vec<u8>)> {
     let mut stdout = std::io::stdout();
 
     let stylized_name = name.italic().cyan();
@@ -196,11 +203,11 @@ fn validate_file_hash(
     }
 }
 
-fn extract_mod(file_ext: &str, bytes: &[u8]) -> Result<tempfile::TempDir> {
+fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::TempDir> {
     let tempdir = tempfile::tempdir().wrap_err("Failed creating temporary directory")?;
     let temp_path = Utf8Path::from_path(tempdir.path()).wrap_err("temp path was not UTF-8")?;
-    match file_ext {
-        "zip" => {
+    match file_type {
+        ArchiveFileType::Zip => {
             let bytes = std::io::Cursor::new(&bytes);
             let mut zip_archive = zip::ZipArchive::new(bytes).wrap_err("Failed opening zipfile")?;
 
@@ -225,11 +232,10 @@ fn extract_mod(file_ext: &str, bytes: &[u8]) -> Result<tempfile::TempDir> {
                 }
             }
         }
-        "7z" => {
+        ArchiveFileType::SevenZ => {
             let bytes = std::io::Cursor::new(&bytes);
             sevenz_rust::decompress(bytes, temp_path).wrap_err("Failed extracting 7z archive")?;
         }
-        _ => bail!("Unsupported extension for extraction: {file_ext}"),
     }
 
     let entries: Result<Vec<_>, std::io::Error> = std::fs::read_dir(temp_path)
