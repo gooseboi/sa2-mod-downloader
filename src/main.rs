@@ -19,11 +19,11 @@ use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fs;
 use std::{
     collections::HashMap,
     io::{Read as _, Write as _},
 };
-use tokio::{fs, io::AsyncWriteExt};
 use url::Url;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -215,10 +215,10 @@ fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::Te
                 let mut zip_file = zip_archive.by_index(i)?;
                 let file_path = temp_path.join(zip_file.name());
                 if zip_file.is_dir() {
-                    std::fs::create_dir_all(file_path)
+                    fs::create_dir_all(file_path)
                         .wrap_err("Failed creating directory in temp directory")?;
                 } else if zip_file.is_file() {
-                    let mut file = std::fs::OpenOptions::new()
+                    let mut file = fs::OpenOptions::new()
                         .create_new(true)
                         .write(true)
                         .open(file_path)
@@ -238,7 +238,7 @@ fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::Te
         }
     }
 
-    let entries: Result<Vec<_>, std::io::Error> = std::fs::read_dir(temp_path)
+    let entries: Result<Vec<_>, std::io::Error> = fs::read_dir(temp_path)
         .wrap_err("Failed reading directory")?
         .collect();
     let entries = entries.wrap_err("Failed reading directory entries")?;
@@ -268,7 +268,7 @@ fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::Te
                         .file_name()
                         .wrap_err("Cannot move file without a name")?;
                     let new_path = temp_path.join(file_name);
-                    std::fs::rename(entry.path(), new_path)
+                    fs::rename(entry.path(), new_path)
                         .wrap_err("Failed moving file to new temp folder")?;
                 }
 
@@ -290,7 +290,7 @@ fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::Te
 fn get_mod_name(path: &Utf8Path) -> Result<String> {
     let ini_path = path.join("mod.ini");
 
-    let mut mod_ini = std::fs::OpenOptions::new()
+    let mut mod_ini = fs::OpenOptions::new()
         .read(true)
         .write(false)
         .open(ini_path)
@@ -326,20 +326,20 @@ fn _write_output(
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let file = fs::read_to_string(cli.input_file)
+    let file = tokio::fs::read_to_string(cli.input_file)
         .await
         .wrap_err("Failed to read file")?;
     let list: ModList = toml::from_str(&file).wrap_err("Failed to parse from toml")?;
 
     let output_path = cli.output;
-    match fs::metadata(&output_path).await {
-        Ok(_) => fs::remove_dir_all(&output_path)
+    match tokio::fs::metadata(&output_path).await {
+        Ok(_) => tokio::fs::remove_dir_all(&output_path)
             .await
             .wrap_err("Failed to clear output path")?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => Err(e).wrap_err("Failed to get metadata for output path")?,
     }
-    fs::create_dir_all(&output_path)
+    tokio::fs::create_dir_all(&output_path)
         .await
         .wrap_err("Failed creating output directory")?;
 
