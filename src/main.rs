@@ -406,6 +406,64 @@ async fn get_mod_name(path: &Utf8Path) -> Result<String> {
         .to_owned())
 }
 
+enum ValidationResult {
+    Success,
+    Failure {
+        name: String,
+        expected_and_computed_hash: Option<(String, String)>,
+        expected_and_computed_bytes: Option<(usize, usize)>,
+    },
+}
+
+async fn validate_file_from_manifest(mod_path: &Utf8Path, line: &str) -> Result<ValidationResult> {
+    let mut it = line.split('\t');
+    let Some(name) = it.next() else {
+        bail!("Line {line} had no name field");
+    };
+    let name = name.replace('\\', "/");
+    let Some(byte_count) = it.next() else {
+        bail!("Line {line} had no bytes field");
+    };
+    let byte_count = byte_count
+        .parse::<usize>()
+        .wrap_err_with(|| format!("Byte count for {name} was not a number"))?;
+    let Some(hash) = it.next() else {
+        bail!("Line {line} had no hash field");
+    };
+
+    let file_path = mod_path.join(&name);
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(false)
+        .open(file_path)
+        .await
+        .wrap_err_with(|| format!("Failed opening {name}"))?;
+    let mut file_contents = vec![];
+    file.read_to_end(&mut file_contents)
+        .await
+        .wrap_err_with(|| format!("Failed reading file contents for {name}"))?;
+
+    if file_contents.len() != byte_count {
+        return Ok(ValidationResult::Failure {
+            name,
+            expected_and_computed_hash: None,
+            expected_and_computed_bytes: Some((byte_count, file_contents.len())),
+        });
+    }
+
+    let hash_task = tokio::task::spawn_blocking(move || sha256_hash(&file_contents));
+    let computed_hash = hash_task.await.wrap_err("Failed joining task")?;
+    if computed_hash != hash {
+        Ok(ValidationResult::Failure {
+            name,
+            expected_and_computed_hash: Some((hash.to_owned(), computed_hash)),
+            expected_and_computed_bytes: None,
+        })
+    } else {
+        Ok(ValidationResult::Success)
+    }
+}
+
 async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> {
     let stylized_name = mod_name.italic().cyan();
 
@@ -421,56 +479,78 @@ async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> 
         .await
         .wrap_err("Failed reading from manifest file")?;
     let lines = manifest.lines();
+    let mut tasks = vec![];
     for line in lines {
-        let mut it = line.split('\t');
-        let Some(name) = it.next() else {
-            bail!("Line {line} had no name field");
-        };
-        let name = name.replace('\\', "/");
-        let Some(byte_count) = it.next() else {
-            bail!("Line {line} had no bytes field");
-        };
-        let byte_count = byte_count
-            .parse::<usize>()
-            .wrap_err_with(|| format!("Byte count for {name} was not a number"))?;
-        let Some(hash) = it.next() else {
-            bail!("Line {line} had no hash field");
-        };
-
-        let file_path = mod_path.join(&name);
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .write(false)
-            .open(file_path)
+        let mod_path = mod_path.to_path_buf();
+        let line = line.to_owned();
+        let task =
+            tokio::task::spawn(async move { validate_file_from_manifest(&mod_path, &line).await });
+        tasks.push(task);
+    }
+    let mut stderr = std::io::stderr();
+    for task in tasks {
+        let result = task
             .await
-            .wrap_err_with(|| format!("Failed opening {name}"))?;
-        let mut file_contents = vec![];
-        file.read_to_end(&mut file_contents)
-            .await
-            .wrap_err_with(|| format!("Failed reading file contents for {name}"))?;
-
-        if file_contents.len() != byte_count {
-            return Ok(false);
-        }
-
-        let hash_task = tokio::task::spawn_blocking(move || sha256_hash(&file_contents));
-        let computed_hash = hash_task.await.wrap_err("Failed joining task")?;
-        if computed_hash != hash {
-            let mut stderr = std::io::stderr();
-            crossterm::queue!(
-                stderr,
-                SetForegroundColor(Color::Red),
-                crossterm::style::Print(format!(
-                    "Failed validating manifest for {stylized_name} at {name}"
-                )),
-                SetForegroundColor(Color::Red),
-                crossterm::style::Print(format!("Expected {}, ", hash.bold().magenta())),
-                SetForegroundColor(Color::Red),
-                crossterm::style::Print(format!("got {}", computed_hash.clone().bold().magenta())),
-            )
-            .wrap_err("Failed printing hash error")?;
-            stderr.flush().wrap_err("Failed flushing stderr")?;
-            return Ok(false);
+            .wrap_err("Failed awaiting task")?
+            .wrap_err("Failed validating file from manifest")?;
+        match result {
+            ValidationResult::Success => {}
+            ValidationResult::Failure {
+                name,
+                expected_and_computed_hash: None,
+                expected_and_computed_bytes: Some((expected_bytes, computed_bytes)),
+            } => {
+                crossterm::queue!(
+                    stderr,
+                    SetForegroundColor(Color::Red),
+                    crossterm::style::Print(format!(
+                        "Failed validating manifest for {stylized_name} at {name}: "
+                    )),
+                    SetForegroundColor(Color::Red),
+                    crossterm::style::Print(format!(
+                        "Expected {} ",
+                        expected_bytes.to_string().bold().magenta()
+                    )),
+                    SetForegroundColor(Color::Red),
+                    crossterm::style::Print("bytes, "),
+                    SetForegroundColor(Color::Red),
+                    crossterm::style::Print(format!(
+                        "got {} bytes\n",
+                        computed_bytes.to_string().bold().magenta()
+                    )),
+                )
+                .wrap_err("Failed printing hash error")?;
+                stderr.flush().wrap_err("Failed flushing stderr")?;
+                return Ok(false);
+            }
+            ValidationResult::Failure {
+                name,
+                expected_and_computed_hash: Some((expected_hash, computed_hash)),
+                expected_and_computed_bytes: None,
+            } => {
+                crossterm::queue!(
+                    stderr,
+                    SetForegroundColor(Color::Red),
+                    crossterm::style::Print(format!(
+                        "Failed validating manifest for {stylized_name} at {name}: "
+                    )),
+                    SetForegroundColor(Color::Red),
+                    crossterm::style::Print(format!(
+                        "Expected {} ",
+                        expected_hash.bold().magenta()
+                    )),
+                    SetForegroundColor(Color::Red),
+                    crossterm::style::Print("as hash, "),
+                    SetForegroundColor(Color::Red),
+                    crossterm::style::Print(format!("got {} ", computed_hash.bold().magenta())),
+                    crossterm::style::Print("as hash\n"),
+                    SetForegroundColor(Color::Red),
+                )
+                .wrap_err("Failed printing hash error")?;
+                stderr.flush().wrap_err("Failed flushing stderr")?;
+                return Ok(false);
+            }
+            ValidationResult::Failure { .. } => unreachable!(),
         }
     }
 
