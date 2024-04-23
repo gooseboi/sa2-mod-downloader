@@ -512,27 +512,25 @@ async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> 
         .await
         .wrap_err("Failed reading from manifest file")?;
     let lines = manifest.lines();
-    let mut tasks = vec![];
+    let mut tasks = tokio::task::JoinSet::new();
     for line in lines {
         let mod_path = mod_path.to_path_buf();
         let line = line.to_owned();
-        let task =
-            tokio::task::spawn(async move { validate_file_from_manifest(&mod_path, &line).await });
-        tasks.push(task);
+        tasks.spawn(async move { validate_file_from_manifest(&mod_path, &line).await });
     }
     let mut stderr = std::io::stderr();
     let total = tasks.len();
     let mut stdout = std::io::stdout();
-    for (i, task) in tasks.into_iter().enumerate() {
-        let result = task
-            .await
-            .wrap_err("Failed awaiting task")?
+    let mut i = 1;
+    while let Some(result) = tasks.join_next().await {
+        let result = result
+            .wrap_err("Failed joining task")?
             .wrap_err("Failed validating file from manifest")?;
-        let i = i + 1;
         stdout
             .execute(crossterm::cursor::MoveToColumn(0))
             .expect("Failed moving cursor");
         print!("Validated file {i}/{total}");
+        i = i + 1;
         match result {
             ValidationResult::Success => {}
             ValidationResult::Failure {
