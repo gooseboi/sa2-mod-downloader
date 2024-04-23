@@ -19,11 +19,11 @@ use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs;
 use std::{
     collections::HashMap,
     io::{Read as _, Write as _},
 };
+use tokio::fs;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use url::Url;
 
@@ -274,7 +274,7 @@ fn validate_file_hash(
     }
 }
 
-fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::TempDir> {
+async fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::TempDir> {
     let tempdir = tempfile::tempdir().wrap_err("Failed creating temporary directory")?;
     let temp_path = Utf8Path::from_path(tempdir.path()).wrap_err("temp path was not UTF-8")?;
     match file_type {
@@ -288,24 +288,28 @@ fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::Te
                 if let Some(containing_dir) = rel_path.parent() {
                     let containing_dir = temp_path.join(containing_dir);
                     fs::create_dir_all(containing_dir)
+                        .await
                         .wrap_err("Failed creating directory in temp directory")?;
                 }
 
                 let full_path = temp_path.join(rel_path);
                 if zip_file.is_dir() {
                     fs::create_dir_all(full_path)
+                        .await
                         .wrap_err("Failed creating directory in temp directory")?;
                 } else if zip_file.is_file() {
                     let mut file = fs::OpenOptions::new()
                         .create_new(true)
                         .write(true)
                         .open(full_path)
+                        .await
                         .wrap_err("Failed opening file in temp directory")?;
                     let mut bytes = vec![];
                     zip_file
                         .read_to_end(&mut bytes)
                         .wrap_err("Failed reading from zip file")?;
                     file.write_all(&bytes)
+                        .await
                         .wrap_err("Failed writing file to temp directory")?;
                 }
             }
@@ -316,15 +320,25 @@ fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::Te
         }
     }
 
-    let entries: Result<Vec<_>, std::io::Error> = fs::read_dir(temp_path)
-        .wrap_err("Failed reading directory")?
-        .collect();
-    let entries = entries.wrap_err("Failed reading directory entries")?;
+    let mut it = fs::read_dir(temp_path)
+        .await
+        .wrap_err("Failed reading directory")?;
+
+    let mut entries = vec![];
+    while let Some(entry) = it
+        .next_entry()
+        .await
+        .wrap_err("Failed to read item from directory")?
+    {
+        entries.push(entry);
+    }
+
     match entries.len() {
         0 => bail!("Empty archive file"),
         1 => {
             if entries[0]
                 .metadata()
+                .await
                 .wrap_err("Failed statting entry")?
                 .is_dir()
             {
@@ -347,6 +361,7 @@ fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::Te
                         .wrap_err("Cannot move file without a name")?;
                     let new_path = temp_path.join(file_name);
                     fs::rename(entry.path(), new_path)
+                        .await
                         .wrap_err("Failed moving file to new temp folder")?;
                 }
 
@@ -365,15 +380,25 @@ fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::Te
     }
 }
 
-fn get_mod_name(path: &Utf8Path) -> Result<String> {
+async fn get_mod_name(path: &Utf8Path) -> Result<String> {
     let ini_path = path.join("mod.ini");
 
     let mut mod_ini = fs::OpenOptions::new()
         .read(true)
         .write(false)
         .open(ini_path)
+        .await
         .wrap_err("Failed loading mod ini")?;
-    let mod_ini = ini::Ini::read_from(&mut mod_ini).wrap_err("Failed reading data from mod ini")?;
+    let mut bytes = vec![];
+    mod_ini
+        .read_to_end(&mut bytes)
+        .await
+        .wrap_err("Failed reading data from mod.ini")?;
+    let ini_task = tokio::task::spawn_blocking(move || {
+        let mut bytes = std::io::Cursor::new(&bytes);
+        ini::Ini::read_from(&mut bytes).wrap_err("Failed parsing mod.ini")
+    });
+    let mod_ini = ini_task.await.wrap_err("Failed awaiting task")??;
     Ok(mod_ini
         .general_section()
         .get("Name")
@@ -381,7 +406,7 @@ fn get_mod_name(path: &Utf8Path) -> Result<String> {
         .to_owned())
 }
 
-fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> {
+async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> {
     let stylized_name = mod_name.italic().cyan();
 
     let manifest_path = mod_path.join("mod.manifest");
@@ -392,8 +417,9 @@ fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> {
         return Ok(true);
     }
 
-    let manifest =
-        fs::read_to_string(manifest_path).wrap_err("Failed reading from manifest file")?;
+    let manifest = fs::read_to_string(manifest_path)
+        .await
+        .wrap_err("Failed reading from manifest file")?;
     let lines = manifest.lines();
     for line in lines {
         let mut it = line.split('\t');
@@ -416,16 +442,19 @@ fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> {
             .read(true)
             .write(false)
             .open(file_path)
+            .await
             .wrap_err_with(|| format!("Failed opening {name}"))?;
         let mut file_contents = vec![];
         file.read_to_end(&mut file_contents)
+            .await
             .wrap_err_with(|| format!("Failed reading file contents for {name}"))?;
 
         if file_contents.len() != byte_count {
             return Ok(false);
         }
 
-        let computed_hash = sha256_hash(&file_contents);
+        let hash_task = tokio::task::spawn_blocking(move || sha256_hash(&file_contents));
+        let computed_hash = hash_task.await.wrap_err("Failed joining task")?;
         if computed_hash != hash {
             let mut stderr = std::io::stderr();
             crossterm::queue!(
@@ -459,7 +488,7 @@ fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> {
     Ok(true)
 }
 
-fn _write_output(
+async fn _write_output(
     output_path: &Utf8Path,
     mod_name: &str,
     _mod_path: &Utf8Path,
@@ -473,6 +502,7 @@ fn _write_output(
         .create(true)
         .truncate(true)
         .open(fname)
+        .await
         .wrap_err_with(|| format!("Failed opening output file for {mod_name}"))?;
 
     todo!()
@@ -551,17 +581,24 @@ async fn main() -> Result<()> {
                 .wrap_err_with(|| format!("Failed adding mod for url {url} into cache"))?;
         }
 
-        let mod_dir = extract_mod(&file_ext, &bytes).wrap_err("Failed extracting mod files")?;
+        let mod_dir = extract_mod(&file_ext, &bytes)
+            .await
+            .wrap_err("Failed extracting mod files")?;
         let mod_path = Utf8Path::from_path(mod_dir.path()).wrap_err("Temp dir was not UTF-8")?;
 
-        if !validate_manifest(name, mod_path).wrap_err("Failed validating mod manifest")? {
+        if !validate_manifest(name, mod_path)
+            .await
+            .wrap_err("Failed validating mod manifest")?
+        {
             eprintln!("Skipping");
             println!();
             println!();
             continue;
         }
 
-        let mod_name = get_mod_name(mod_path).wrap_err("Failed getting mod name")?;
+        let mod_name = get_mod_name(mod_path)
+            .await
+            .wrap_err("Failed getting mod name")?;
 
         println!();
         println!();
