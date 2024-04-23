@@ -274,83 +274,8 @@ fn validate_file_hash(
     }
 }
 
-async fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::TempDir> {
-    let tempdir = tempfile::tempdir().wrap_err("Failed creating temporary directory")?;
-    let temp_path = Utf8Path::from_path(tempdir.path()).wrap_err("temp path was not UTF-8")?;
-    println!("Extracting files from archive");
-    match file_type {
-        ArchiveFileType::Zip => {
-            let bytes = std::io::Cursor::new(&bytes);
-            let mut zip_archive = zip::ZipArchive::new(bytes).wrap_err("Failed opening zipfile")?;
-
-            let total = zip_archive.len();
-            for i in 0..total {
-                let mut stdout = std::io::stdout();
-                stdout
-                    .execute(crossterm::cursor::MoveToColumn(0))
-                    .wrap_err("Failed moving cursor")?;
-                print!("Extracting file {}/{}", i + 1, total);
-                let mut zip_file = zip_archive.by_index(i)?;
-                let rel_path = Utf8Path::new(zip_file.name());
-                if let Some(containing_dir) = rel_path.parent() {
-                    let containing_dir = temp_path.join(containing_dir);
-                    fs::create_dir_all(containing_dir)
-                        .await
-                        .wrap_err("Failed creating directory in temp directory")?;
-                }
-
-                let full_path = temp_path.join(rel_path);
-                if zip_file.is_dir() {
-                    fs::create_dir_all(full_path)
-                        .await
-                        .wrap_err("Failed creating directory in temp directory")?;
-                } else if zip_file.is_file() {
-                    let mut file = fs::OpenOptions::new()
-                        .create_new(true)
-                        .write(true)
-                        .open(full_path)
-                        .await
-                        .wrap_err("Failed opening file in temp directory")?;
-                    let mut bytes = vec![];
-                    zip_file
-                        .read_to_end(&mut bytes)
-                        .wrap_err("Failed reading from zip file")?;
-                    file.write_all(&bytes)
-                        .await
-                        .wrap_err("Failed writing file to temp directory")?;
-                }
-            }
-            println!()
-        }
-        ArchiveFileType::SevenZ => {
-            let total = {
-                let total = bytes.len();
-                let mut bytes = std::io::Cursor::new(&bytes);
-                sevenz_rust::Archive::read(&mut bytes, total as u64, &[])
-                    .wrap_err("Failed reading 7z archive")?
-                    .files
-                    .len()
-            };
-            let bytes = std::io::Cursor::new(&bytes);
-            let mut i = 1;
-            let mut stdout = std::io::stdout();
-            sevenz_rust::decompress_with_extract_fn(
-                bytes,
-                temp_path,
-                move |entry, reader, dest| {
-                    stdout
-                        .execute(crossterm::cursor::MoveToColumn(0))
-                        .expect("Failed moving cursor");
-                    print!("Extracting file {i}/{total}");
-                    i = i + 1;
-                    sevenz_rust::default_entry_extract_fn(entry, reader, dest)
-                },
-            )
-            .wrap_err("Failed extracting 7z archive")?;
-            println!()
-        }
-    }
-
+async fn normalise_extracted_mod(tempdir: tempfile::TempDir) -> Result<tempfile::TempDir> {
+    let temp_path = Utf8Path::from_path(tempdir.path()).wrap_err("Tempdir path is not UTF-8")?;
     let mut it = fs::read_dir(temp_path)
         .await
         .wrap_err("Failed reading directory")?;
@@ -364,7 +289,7 @@ async fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfi
         entries.push(entry);
     }
 
-    let tempdir = match entries.len() {
+    match entries.len() {
         0 => bail!("Empty archive file"),
         1 if entries[0]
             .metadata()
@@ -404,11 +329,102 @@ async fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfi
                 Ok(tempdir)
             }
         }
-    };
+    }
+}
+
+async fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::TempDir> {
+    let tempdir = tempfile::tempdir().wrap_err("Failed creating temporary directory")?;
+    let temp_path = Utf8Path::from_path(tempdir.path()).wrap_err("temp path was not UTF-8")?;
+    println!("Extracting files from archive");
+    match file_type {
+        ArchiveFileType::Zip => {
+            let bytes = std::io::Cursor::new(bytes.to_vec());
+            let zip_archive = zip::ZipArchive::new(bytes).wrap_err("Failed opening zipfile")?;
+
+            #[allow(clippy::items_after_statements)]
+            fn extract_zipfile(
+                mut zip_archive: zip::ZipArchive<std::io::Cursor<Vec<u8>>>,
+                temp_path: &Utf8Path,
+            ) -> Result<()> {
+                let total = zip_archive.len();
+                for i in 0..total {
+                    let mut stdout = std::io::stdout();
+                    stdout
+                        .execute(crossterm::cursor::MoveToColumn(0))
+                        .wrap_err("Failed moving cursor")?;
+                    print!("Extracting file {}/{}", i + 1, total);
+                    let mut zip_file = zip_archive.by_index(i)?;
+                    let rel_path = Utf8Path::new(zip_file.name());
+                    if let Some(containing_dir) = rel_path.parent() {
+                        let containing_dir = temp_path.join(containing_dir);
+                        std::fs::create_dir_all(containing_dir)
+                            .wrap_err("Failed creating directory in temp directory")?;
+                    }
+
+                    let full_path = temp_path.join(rel_path);
+                    if zip_file.is_dir() {
+                        std::fs::create_dir_all(full_path)
+                            .wrap_err("Failed creating directory in temp directory")?;
+                    } else if zip_file.is_file() {
+                        let mut file = std::fs::OpenOptions::new()
+                            .create_new(true)
+                            .write(true)
+                            .open(full_path)
+                            .wrap_err("Failed opening file in temp directory")?;
+                        let mut bytes = vec![];
+                        zip_file
+                            .read_to_end(&mut bytes)
+                            .wrap_err("Failed reading from zip file")?;
+                        file.write_all(&bytes)
+                            .wrap_err("Failed writing file to temp directory")?;
+                    }
+                }
+                println!();
+                Ok(())
+            }
+
+            let temp_path = temp_path.to_path_buf();
+            tokio::task::spawn_blocking(move || extract_zipfile(zip_archive, &temp_path))
+                .await
+                .wrap_err("Failed joining task")?
+                .wrap_err("Error when extracting zip archive")?;
+        }
+        ArchiveFileType::SevenZ => {
+            let total = {
+                let total = bytes.len();
+                let mut bytes = std::io::Cursor::new(&bytes);
+                sevenz_rust::Archive::read(&mut bytes, total as u64, &[])
+                    .wrap_err("Failed reading 7z archive")?
+                    .files
+                    .len()
+            };
+            let bytes = std::io::Cursor::new(&bytes);
+            let mut i = 1;
+            let mut stdout = std::io::stdout();
+            sevenz_rust::decompress_with_extract_fn(
+                bytes,
+                temp_path,
+                move |entry, reader, dest| {
+                    stdout
+                        .execute(crossterm::cursor::MoveToColumn(0))
+                        .expect("Failed moving cursor");
+                    print!("Extracting file {i}/{total}");
+                    i += 1;
+                    sevenz_rust::default_entry_extract_fn(entry, reader, dest)
+                },
+            )
+            .wrap_err("Failed extracting 7z archive")?;
+            println!();
+        }
+    }
+
+    let tempdir = normalise_extracted_mod(tempdir)
+        .await
+        .wrap_err("Failed normalising mod directory layout")?;
 
     println!("Finished extracting archive");
 
-    tempdir
+    Ok(tempdir)
 }
 
 async fn get_mod_name(path: &Utf8Path) -> Result<String> {
@@ -484,17 +500,18 @@ async fn validate_file_from_manifest(mod_path: &Utf8Path, line: &str) -> Result<
 
     let hash_task = tokio::task::spawn_blocking(move || sha256_hash(&file_contents));
     let computed_hash = hash_task.await.wrap_err("Failed joining task")?;
-    if computed_hash != hash {
+    if computed_hash == hash {
+        Ok(ValidationResult::Success)
+    } else {
         Ok(ValidationResult::Failure {
             name,
             expected_and_computed_hash: Some((hash.to_owned(), computed_hash)),
             expected_and_computed_bytes: None,
         })
-    } else {
-        Ok(ValidationResult::Success)
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> {
     let stylized_name = mod_name.italic().cyan();
 
@@ -530,7 +547,7 @@ async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> 
             .execute(crossterm::cursor::MoveToColumn(0))
             .expect("Failed moving cursor");
         print!("Validated file {i}/{total}");
-        i = i + 1;
+        i += 1;
         match result {
             ValidationResult::Success => {}
             ValidationResult::Failure {
@@ -652,7 +669,7 @@ async fn main() -> Result<()> {
         .await
         .wrap_err("Failed creating output directory")?;
 
-    let cache_dir = std::env::var("XDG_CACHE_HOME").unwrap_or("~/.cache".to_owned());
+    let cache_dir = std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| "~/.cache".to_owned());
     let cache_dir = Utf8PathBuf::from(cache_dir);
     let cache_dir = cache_dir.join("sa2_mod_downloader");
 
