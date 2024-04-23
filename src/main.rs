@@ -277,12 +277,19 @@ fn validate_file_hash(
 async fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfile::TempDir> {
     let tempdir = tempfile::tempdir().wrap_err("Failed creating temporary directory")?;
     let temp_path = Utf8Path::from_path(tempdir.path()).wrap_err("temp path was not UTF-8")?;
+    println!("Extracting files from archive");
     match file_type {
         ArchiveFileType::Zip => {
             let bytes = std::io::Cursor::new(&bytes);
             let mut zip_archive = zip::ZipArchive::new(bytes).wrap_err("Failed opening zipfile")?;
 
-            for i in 0..zip_archive.len() {
+            let total = zip_archive.len();
+            for i in 0..total {
+                let mut stdout = std::io::stdout();
+                stdout
+                    .execute(crossterm::cursor::MoveToColumn(0))
+                    .wrap_err("Failed moving cursor")?;
+                print!("Extracting file {}/{}", i + 1, total);
                 let mut zip_file = zip_archive.by_index(i)?;
                 let rel_path = Utf8Path::new(zip_file.name());
                 if let Some(containing_dir) = rel_path.parent() {
@@ -313,10 +320,34 @@ async fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfi
                         .wrap_err("Failed writing file to temp directory")?;
                 }
             }
+            println!()
         }
         ArchiveFileType::SevenZ => {
+            let total = {
+                let total = bytes.len();
+                let mut bytes = std::io::Cursor::new(&bytes);
+                sevenz_rust::Archive::read(&mut bytes, total as u64, &[])
+                    .wrap_err("Failed reading 7z archive")?
+                    .files
+                    .len()
+            };
             let bytes = std::io::Cursor::new(&bytes);
-            sevenz_rust::decompress(bytes, temp_path).wrap_err("Failed extracting 7z archive")?;
+            let mut i = 1;
+            let mut stdout = std::io::stdout();
+            sevenz_rust::decompress_with_extract_fn(
+                bytes,
+                temp_path,
+                move |entry, reader, dest| {
+                    stdout
+                        .execute(crossterm::cursor::MoveToColumn(0))
+                        .expect("Failed moving cursor");
+                    print!("Extracting file {i}/{total}");
+                    i = i + 1;
+                    sevenz_rust::default_entry_extract_fn(entry, reader, dest)
+                },
+            )
+            .wrap_err("Failed extracting 7z archive")?;
+            println!()
         }
     }
 
@@ -333,43 +364,39 @@ async fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfi
         entries.push(entry);
     }
 
-    match entries.len() {
+    let tempdir = match entries.len() {
         0 => bail!("Empty archive file"),
-        1 => {
-            if entries[0]
-                .metadata()
-                .await
-                .wrap_err("Failed statting entry")?
-                .is_dir()
+        1 if entries[0]
+            .metadata()
+            .await
+            .wrap_err("Failed statting entry")?
+            .is_dir() =>
+        {
+            let tempdir = tempfile::tempdir().wrap_err("Failed creating temporary directory")?;
+            let temp_path =
+                Utf8Path::from_path(tempdir.path()).wrap_err("temp path was not UTF-8")?;
+
+            for entry in entries[0]
+                .path()
+                .read_dir()
+                .wrap_err("Failed reading directory")?
             {
-                let tempdir =
-                    tempfile::tempdir().wrap_err("Failed creating temporary directory")?;
-                let temp_path =
-                    Utf8Path::from_path(tempdir.path()).wrap_err("temp path was not UTF-8")?;
-
-                for entry in entries[0]
-                    .path()
-                    .read_dir()
-                    .wrap_err("Failed reading directory")?
-                {
-                    let entry = entry.wrap_err("Failed reading directory entry")?;
-                    let old_path = entry.path();
-                    let old_path =
-                        Utf8Path::from_path(&old_path).wrap_err("File's path was not UTF-8")?;
-                    let file_name = old_path
-                        .file_name()
-                        .wrap_err("Cannot move file without a name")?;
-                    let new_path = temp_path.join(file_name);
-                    fs::rename(entry.path(), new_path)
-                        .await
-                        .wrap_err("Failed moving file to new temp folder")?;
-                }
-
-                Ok(tempdir)
-            } else {
-                bail!("Invalid mod directory layout, only one file inside");
+                let entry = entry.wrap_err("Failed reading directory entry")?;
+                let old_path = entry.path();
+                let old_path =
+                    Utf8Path::from_path(&old_path).wrap_err("File's path was not UTF-8")?;
+                let file_name = old_path
+                    .file_name()
+                    .wrap_err("Cannot move file without a name")?;
+                let new_path = temp_path.join(file_name);
+                fs::rename(entry.path(), new_path)
+                    .await
+                    .wrap_err("Failed moving file to new temp folder")?;
             }
+
+            Ok(tempdir)
         }
+        1 => bail!("Invalid mod directory layout, only one file inside"),
         _ => {
             if entries.into_iter().any(|e| e.file_name() == "mod.ini") {
                 bail!("Invalid mod, no mod.ini");
@@ -377,7 +404,11 @@ async fn extract_mod(file_type: &ArchiveFileType, bytes: &[u8]) -> Result<tempfi
                 Ok(tempdir)
             }
         }
-    }
+    };
+
+    println!("Finished extracting archive");
+
+    tempdir
 }
 
 async fn get_mod_name(path: &Utf8Path) -> Result<String> {
@@ -467,11 +498,13 @@ async fn validate_file_from_manifest(mod_path: &Utf8Path, line: &str) -> Result<
 async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> {
     let stylized_name = mod_name.italic().cyan();
 
+    println!("Starting manifest validation");
     let manifest_path = mod_path.join("mod.manifest");
     if !manifest_path
         .try_exists()
         .wrap_err("Could not check if manifest exists")?
     {
+        println!("Skipping because there is no manifest");
         return Ok(true);
     }
 
@@ -488,11 +521,18 @@ async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> 
         tasks.push(task);
     }
     let mut stderr = std::io::stderr();
-    for task in tasks {
+    let total = tasks.len();
+    let mut stdout = std::io::stdout();
+    for (i, task) in tasks.into_iter().enumerate() {
         let result = task
             .await
             .wrap_err("Failed awaiting task")?
             .wrap_err("Failed validating file from manifest")?;
+        let i = i + 1;
+        stdout
+            .execute(crossterm::cursor::MoveToColumn(0))
+            .expect("Failed moving cursor");
+        print!("Validated file {i}/{total}");
         match result {
             ValidationResult::Success => {}
             ValidationResult::Failure {
@@ -515,9 +555,12 @@ async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> 
                     crossterm::style::Print("bytes, "),
                     SetForegroundColor(Color::Red),
                     crossterm::style::Print(format!(
-                        "got {} bytes\n",
+                        "got {} ",
                         computed_bytes.to_string().bold().magenta()
                     )),
+                    SetForegroundColor(Color::Red),
+                    crossterm::style::Print("bytes\n"),
+                    ResetColor
                 )
                 .wrap_err("Failed printing hash error")?;
                 stderr.flush().wrap_err("Failed flushing stderr")?;
@@ -553,6 +596,7 @@ async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> 
             ValidationResult::Failure { .. } => unreachable!(),
         }
     }
+    println!();
 
     let mut stdout = std::io::stdout();
     crossterm::queue!(
