@@ -561,6 +561,7 @@ async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> 
         crossterm::style::Print(format!("Manifest validation for {stylized_name} ")),
         SetForegroundColor(Color::Green),
         crossterm::style::Print("succeeded"),
+        ResetColor
     )
     .wrap_err("Failed printing success message")?;
     stdout.flush().wrap_err("Failed flushing stdout")?;
