@@ -22,10 +22,17 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     io::{Read as _, Write as _},
+    sync::Arc,
 };
 use tokio::fs;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use url::Url;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Override {
+    hash: String,
+    bytes: usize,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Mod {
@@ -37,6 +44,9 @@ struct Mod {
     hash: String,
     // Options to change inside the mod file
     opts: Option<HashMap<String, toml::Value>>,
+    // Overrides for hashes or file sizes for mod.manifest
+    #[serde(default)]
+    overrides: HashMap<String, Override>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -462,7 +472,11 @@ enum ValidationResult {
     },
 }
 
-async fn validate_file_from_manifest(mod_path: &Utf8Path, line: &str) -> Result<ValidationResult> {
+async fn validate_file_from_manifest(
+    mod_path: &Utf8Path,
+    line: &str,
+    overrides: &HashMap<String, Override>,
+) -> Result<ValidationResult> {
     let mut it = line.split('\t');
     let Some(name) = it.next() else {
         bail!("Line {line} had no name field");
@@ -476,6 +490,12 @@ async fn validate_file_from_manifest(mod_path: &Utf8Path, line: &str) -> Result<
         .wrap_err_with(|| format!("Byte count for {name} was not a number"))?;
     let Some(hash) = it.next() else {
         bail!("Line {line} had no hash field");
+    };
+
+    let (hash, byte_count) = if let Some(Override { hash, bytes }) = overrides.get(&name) {
+        (hash.to_owned(), *bytes)
+    } else {
+        (hash.to_owned(), byte_count)
     };
 
     let file_path = mod_path.join(&name);
@@ -512,7 +532,11 @@ async fn validate_file_from_manifest(mod_path: &Utf8Path, line: &str) -> Result<
 }
 
 #[allow(clippy::too_many_lines)]
-async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> {
+async fn validate_manifest(
+    mod_name: &str,
+    mod_path: &Utf8Path,
+    overrides: &HashMap<String, Override>,
+) -> Result<bool> {
     let stylized_name = mod_name.italic().cyan();
 
     println!("Starting manifest validation");
@@ -530,10 +554,12 @@ async fn validate_manifest(mod_name: &str, mod_path: &Utf8Path) -> Result<bool> 
         .wrap_err("Failed reading from manifest file")?;
     let lines = manifest.lines();
     let mut tasks = tokio::task::JoinSet::new();
+    let overrides = Arc::new(overrides.clone());
     for line in lines {
         let mod_path = mod_path.to_path_buf();
         let line = line.to_owned();
-        tasks.spawn(async move { validate_file_from_manifest(&mod_path, &line).await });
+        let overrides = Arc::clone(&overrides);
+        tasks.spawn(async move { validate_file_from_manifest(&mod_path, &line, &overrides).await });
     }
     let mut stderr = std::io::stderr();
     let total = tasks.len();
@@ -688,7 +714,11 @@ async fn main() -> Result<()> {
     for (
         i,
         Mod {
-            url, name, hash, ..
+            url,
+            name,
+            hash,
+            overrides,
+            ..
         },
     ) in list.mods.iter().enumerate()
     {
@@ -726,7 +756,7 @@ async fn main() -> Result<()> {
             .wrap_err("Failed extracting mod files")?;
         let mod_path = Utf8Path::from_path(mod_dir.path()).wrap_err("Temp dir was not UTF-8")?;
 
-        if !validate_manifest(name, mod_path)
+        if !validate_manifest(name, mod_path, overrides)
             .await
             .wrap_err("Failed validating mod manifest")?
         {

@@ -38,6 +38,11 @@ name = "Dreamcast Characters"
 url = "https://gamebanana.com/dl/736160"
 hash = "0de0d592c34c7e81093784578576ed2647775f622c1ca3eae45372a844a85c5b"
 
+[mods.overrides]
+"mod.ini" = { hash = "fefc797213427be79e0f94e822010b3779ba5f16d5c2e58aa10b087e38c10f6c", bytes = 262 }
+"configschema.xml" = { hash = "7222e866851cf3ae8216d532ebfa01fe9e78a133544e99bfe1750021cb3618af", bytes = 8159 }
+"DCCharacters.dll" = { hash = "2ece46ffe9714a00c21bca52deaea4422d53605d0ac365068d66ef6828b70c99", bytes = 116224 }
+
 [[mods]]
 name = "Dreamcast Mech Grunts"
 url = "https://github.com/shaddatic/sa2b-dc-mech-grunts/releases/download/v3.0/dc-mech-grunts.7z"
