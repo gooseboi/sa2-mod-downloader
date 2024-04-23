@@ -528,7 +528,7 @@ async fn validate_file_from_manifest(
     } else {
         Ok(ValidationResult::Failure {
             name,
-            expected_and_computed_hash: Some((hash.to_owned(), computed_hash)),
+            expected_and_computed_hash: Some((hash.clone(), computed_hash)),
             expected_and_computed_bytes: None,
         })
     }
@@ -648,7 +648,7 @@ async fn validate_manifest(
         SetForegroundColor(Color::Green),
         crossterm::style::Print(format!("Manifest validation for {stylized_name} ")),
         SetForegroundColor(Color::Green),
-        crossterm::style::Print("succeeded"),
+        crossterm::style::Print("succeeded\n"),
         ResetColor
     )
     .wrap_err("Failed printing success message")?;
