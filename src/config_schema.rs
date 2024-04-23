@@ -1,5 +1,8 @@
 use camino::Utf8Path;
-use color_eyre::{eyre::WrapErr as _, Result};
+use color_eyre::{
+    eyre::{ContextCompat as _, WrapErr as _},
+    Result,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tokio::{
@@ -71,7 +74,6 @@ struct UnresolvedProperty {
 #[derive(Debug)]
 pub struct Config {
     pub groups: Vec<Group>,
-    pub enums: Vec<Enum>,
 }
 
 #[derive(Debug)]
@@ -81,18 +83,21 @@ pub struct Group {
     properties: Vec<Property>,
 }
 
+#[derive(Clone, Debug)]
+pub enum PropertyType {
+    Bool,
+    ValueSet {
+        name: String,
+        values: HashSet<(Option<String>, String)>,
+    },
+}
+
 #[derive(Debug)]
 pub struct Property {
     name: String,
     display_name: String,
-    ty: String,
+    ty: PropertyType,
     default_value: String,
-}
-
-#[derive(Debug)]
-pub struct Enum {
-    name: String,
-    values: HashSet<(Option<String>, String)>,
 }
 
 pub async fn parse(mod_path: &Utf8Path) -> Result<Option<Config>> {
@@ -117,12 +122,12 @@ pub async fn parse(mod_path: &Utf8Path) -> Result<Option<Config>> {
     let unresolved_config: UnresolvedConfig =
         quick_xml::de::from_str(&s).wrap_err("Failed reading xml from file")?;
 
-    let enums = unresolved_config
+    let enums: Vec<_> = unresolved_config
         .enums
         .map(|e| e.en)
         .unwrap_or_default()
         .into_iter()
-        .map(|e| Enum {
+        .map(|e| PropertyType::ValueSet {
             name: e.name,
             values: e
                 .members
@@ -144,12 +149,24 @@ pub async fn parse(mod_path: &Utf8Path) -> Result<Option<Config>> {
                 .map(|p| Property {
                     name: p.name,
                     display_name: p.display_name,
-                    ty: p.ty,
+                    ty: match p.ty.as_str() {
+                        "bool" => PropertyType::Bool,
+                        ty => enums
+                            .iter()
+                            .find(|e| {
+                                let PropertyType::ValueSet { name, .. } = e else {
+                                    unreachable!()
+                                };
+                                ty == name
+                            })
+                            .unwrap_or_else(|| panic!("Failed to find type {ty} in enums"))
+                            .clone(),
+                    },
                     default_value: p.default,
                 })
                 .collect(),
         })
         .collect();
-    let config = Config { groups, enums };
+    let config = Config { groups };
     Ok(Some(config))
 }
