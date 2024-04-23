@@ -1,3 +1,4 @@
+#![feature(try_find)]
 #![deny(
     clippy::enum_glob_use,
     clippy::pedantic,
@@ -27,6 +28,8 @@ use std::{
 use tokio::fs;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use url::Url;
+
+mod config_schema;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Override {
@@ -769,6 +772,11 @@ async fn main() -> Result<()> {
         let mod_name = get_mod_name(mod_path)
             .await
             .wrap_err("Failed getting mod name")?;
+
+        let config_schema = config_schema::parse(mod_path)
+            .await
+            .wrap_err("Failed getting config schema")?;
+        println!("Config schema: {config_schema:#?}");
 
         println!();
         println!();
