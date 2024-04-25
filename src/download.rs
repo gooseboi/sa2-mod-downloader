@@ -1,4 +1,4 @@
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
 use color_eyre::{
     eyre::{bail, ContextCompat as _, WrapErr as _},
     Result,
@@ -33,7 +33,7 @@ pub async fn get_file_and_validate(
     let url = &m.url;
     let stylized_name = name.clone().italic().cyan();
 
-    let (file_ext, bytes, is_local) = download_file(&client, &m.url, &m.name, cache_dir)
+    let (file_ext, bytes, is_local) = download_file(client, &m.url, &m.name, cache_dir)
         .await
         .wrap_err("Failed downloading file")?;
 
@@ -49,7 +49,7 @@ pub async fn get_file_and_validate(
     }
 
     if !is_local {
-        add_file_to_cache(&cache_dir, url, &bytes)
+        add_file_to_cache(cache_dir, url, &bytes)
             .await
             .wrap_err_with(|| format!("Failed adding mod for url {url} into cache"))?;
     }

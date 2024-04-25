@@ -49,9 +49,9 @@ pub enum OptValue {
     String(String),
 }
 
-impl Into<String> for OptValue {
-    fn into(self) -> String {
-        match self {
+impl From<OptValue> for String {
+    fn from(val: OptValue) -> Self {
+        match val {
             OptValue::Bool(b) => b.to_string(),
             OptValue::String(s) => s,
         }

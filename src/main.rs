@@ -13,8 +13,7 @@ use color_eyre::{
     Result,
 };
 use crossterm::style::Stylize;
-use tokio::fs;
-use tokio::io::AsyncReadExt as _;
+use tokio::{fs, io::AsyncReadExt as _};
 
 mod config_schema;
 mod download;
@@ -22,7 +21,6 @@ mod modfile;
 mod utils;
 use modfile::{Mod, ModList, OptMap};
 use reqwest_middleware::ClientWithMiddleware;
-use std::io::Read as _;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -83,7 +81,7 @@ async fn _write_output(
 
 fn generate_ini_config(
     mod_path: &Utf8Path,
-    config_schema: config_schema::Config,
+    config_schema: &config_schema::Config,
     opts: &OptMap,
 ) -> Result<()> {
     let ini_path = mod_path.join("config.ini");
@@ -196,16 +194,16 @@ async fn main() -> Result<()> {
 
         let mod_path = Utf8Path::from_path(mod_dir.path()).wrap_err("tmp path was not UTF-8")?;
 
-        let mod_name = get_mod_name(&mod_path)
+        let mod_name = get_mod_name(mod_path)
             .await
             .wrap_err("Failed getting mod name")?;
 
-        let config_schema = config_schema::parse(&mod_path)
+        let config_schema = config_schema::parse(mod_path)
             .await
             .wrap_err("Failed getting config schema")?;
 
         if let (Some(config_schema), Some(opts)) = (config_schema, opts) {
-            generate_ini_config(&mod_path, config_schema, opts)
+            generate_ini_config(mod_path, &config_schema, opts)
                 .wrap_err("Failed generating ini for mod")?;
         }
 
