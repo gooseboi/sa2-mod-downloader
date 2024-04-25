@@ -1,8 +1,5 @@
 use camino::Utf8Path;
-use color_eyre::{
-    eyre::{ContextCompat as _, WrapErr as _},
-    Result,
-};
+use color_eyre::{eyre::WrapErr as _, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tokio::{
@@ -78,9 +75,9 @@ pub struct Config {
 
 #[derive(Debug)]
 pub struct Group {
-    name: String,
-    display_name: Option<String>,
-    properties: Vec<Property>,
+    pub name: String,
+    pub display_name: Option<String>,
+    pub properties: Vec<Property>,
 }
 
 #[derive(Clone, Debug)]
@@ -94,10 +91,10 @@ pub enum PropertyType {
 
 #[derive(Debug)]
 pub struct Property {
-    name: String,
-    display_name: String,
-    ty: PropertyType,
-    default_value: String,
+    pub name: String,
+    pub display_name: String,
+    pub ty: PropertyType,
+    pub default_value: String,
 }
 
 pub async fn parse(mod_path: &Utf8Path) -> Result<Option<Config>> {

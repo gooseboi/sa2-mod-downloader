@@ -11,7 +11,14 @@ url = "https://files.gamebanana.com/mods/hedgepanel_5d293.zip"
 hash = "824bb9d50d09988e3dadf1703f4604116d21610af834117426afcbce095f1793"
 
 [mods.opts]
-opt = true
+FastSomersault = "Enabled"
+ModernStyleGrinding = true
+RandomizedHomingSounds = true
+RemoveHomingHeightLimit = true
+NoLowEnemyBounces = true
+BounceFromLightAttack = false
+AutoMagicHandsPrompt = false
+RunningMagicHandsDrop = false
 
 [[mods]]
 name = "Amy Backless Dress"
