@@ -13,7 +13,10 @@ use color_eyre::{
     Result,
 };
 use crossterm::style::Stylize;
-use tokio::{fs, io::AsyncReadExt as _};
+use tokio::{
+    fs,
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+};
 
 mod config_schema;
 mod download;
@@ -23,6 +26,7 @@ use crate::modfile::OptValue;
 use modfile::{Mod, ModList, OptMap};
 use reqwest_middleware::ClientWithMiddleware;
 use std::collections::{HashMap, HashSet};
+use utils::sha256_hash;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -165,6 +169,46 @@ fn generate_ini_config(
     Ok(())
 }
 
+async fn generate_manifest(mod_path: &Utf8Path) -> Result<()> {
+    let mut output = String::new();
+    for f in walkdir::WalkDir::new(mod_path) {
+        let f = f.wrap_err("Failed reading file from directory")?;
+        let path = Utf8Path::from_path(f.path()).wrap_err("Path should be UTF-8")?;
+        let relative_path = path
+            .strip_prefix(mod_path)
+            .wrap_err("Path should be prefixed by mod path")?;
+        if relative_path == "mod.manifest" {
+            continue;
+        }
+        if path.is_dir() {
+            continue;
+        }
+        let bytes = fs::read(path)
+            .await
+            .wrap_err("Failed reading bytes from file")?;
+        let len = bytes.len();
+        let hash = sha256_hash(&bytes);
+        let line = format!("{relative_path}\t{len}\t{hash}\n");
+        output.push_str(&line);
+    }
+
+    let manifest_path = mod_path.join("mod.manifest");
+    let mut output_file = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        // some don't include it
+        .create(true)
+        .open(manifest_path)
+        .await
+        .wrap_err("Failed opening mod.manifest")?;
+    output_file
+        .write_all(output.as_bytes())
+        .await
+        .wrap_err("Failed writing manifest to file")?;
+
+    Ok(())
+}
+
 async fn setup(cli: &Cli) -> Result<(ClientWithMiddleware, ModList, Utf8PathBuf)> {
     let file = tokio::fs::read_to_string(&cli.input_file)
         .await
@@ -247,6 +291,10 @@ async fn main() -> Result<()> {
             generate_ini_config(mod_path, &config_schema, opts)
                 .wrap_err("Failed generating ini for mod")?;
         }
+
+        generate_manifest(mod_path)
+            .await
+            .wrap_err("Failed generating manifest for mod")?;
 
         println!();
         println!();
