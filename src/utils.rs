@@ -23,8 +23,6 @@ pub fn size_str(size: u64) -> String {
 
 #[must_use]
 pub fn sha256_hash(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let computed_hash = hasher.finalize();
+    let computed_hash = Sha256::digest(bytes);
     format!("{computed_hash:016x}")
 }
