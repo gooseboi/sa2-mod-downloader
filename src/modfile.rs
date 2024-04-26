@@ -15,7 +15,6 @@ pub struct OptMap {
     #[serde(flatten)]
     nested: Option<HashMap<String, HashMap<String, OptValue>>>,
 }
-
 impl OptMap {
     pub fn get(&self, k: &impl AsRef<str>) -> Option<&HashMap<String, OptValue>> {
         let k = k.as_ref();

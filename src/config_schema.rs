@@ -1,7 +1,6 @@
 use camino::Utf8Path;
 use color_eyre::{eyre::WrapErr as _, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use tokio::{
     fs,
     io::{AsyncReadExt as _, BufReader},
@@ -76,8 +75,18 @@ pub struct Config {
 #[derive(Debug)]
 pub struct Group {
     pub name: String,
-    pub display_name: Option<String>,
     pub properties: Vec<Property>,
+}
+
+impl Group {
+    pub fn get_option_name(&self, key: &str) -> Option<&str> {
+        for p in &self.properties {
+            if p.name == key || p.display_name == key {
+                return Some(&p.name);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -85,7 +94,7 @@ pub enum PropertyType {
     Bool,
     ValueSet {
         name: String,
-        values: HashSet<(Option<String>, String)>,
+        values: Vec<(Option<String>, String)>,
     },
 }
 
@@ -139,7 +148,6 @@ pub async fn parse(mod_path: &Utf8Path) -> Result<Option<Config>> {
         .into_iter()
         .map(|g| Group {
             name: g.name,
-            display_name: g.display_name,
             properties: g
                 .properties
                 .into_iter()

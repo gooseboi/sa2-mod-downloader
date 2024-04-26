@@ -9,7 +9,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use color_eyre::{
-    eyre::{ContextCompat, WrapErr},
+    eyre::{bail, ensure, ContextCompat, WrapErr},
     Result,
 };
 use crossterm::style::Stylize;
@@ -19,8 +19,10 @@ mod config_schema;
 mod download;
 mod modfile;
 mod utils;
+use crate::modfile::OptValue;
 use modfile::{Mod, ModList, OptMap};
 use reqwest_middleware::ClientWithMiddleware;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -79,6 +81,37 @@ async fn _write_output(
     todo!()
 }
 
+fn is_valid_config(group: &config_schema::Group, opts: &HashMap<String, OptValue>) -> Result<()> {
+    let name = &group.name;
+    for (key, val) in opts {
+        let Some(prop) = group.properties.iter().find(|p| p.name == *key) else {
+            bail!("The option {key} was not in group {name}");
+        };
+        match prop.ty {
+            config_schema::PropertyType::Bool => {
+                ensure!(
+                    matches!(val, OptValue::Bool(_)),
+                    "Schema expected a bool for key {key}, did not get one"
+                );
+            }
+            config_schema::PropertyType::ValueSet {
+                name: _,
+                ref values,
+            } => {
+                let OptValue::String(val) = val else {
+                    bail!("Schema expected a string for key {key}, did not get one");
+                };
+                if !values.iter().any(|(display_name, name)| {
+                    display_name.as_ref().is_some_and(|d| d == val) || name == val
+                }) {
+                    bail!("Schema expected a string of one of {values:#?}, found {val}");
+                }
+            }
+        };
+    }
+    Ok(())
+}
+
 fn generate_ini_config(
     mod_path: &Utf8Path,
     config_schema: &config_schema::Config,
@@ -88,28 +121,36 @@ fn generate_ini_config(
 
     let mut ini = ini::Ini::new();
 
-    // There is only one group, os the config for the group
-    // can be picked up from mod.opts, or mod.opts.{group.name}
-    // let mut written_keys = HashSet::new();
-    if let [group] = &config_schema.groups[..] {
+    for group in &config_schema.groups {
+        let mut written_keys = HashSet::new();
         let name = &group.name;
         let ini_section_name = if name.is_empty() { None } else { Some(name) };
         if let Some(opts) = opts.get(name) {
+            is_valid_config(group, opts).wrap_err("Failed validating config")?;
             for (key, val) in opts {
+                let key = group
+                    .get_option_name(key)
+                    .wrap_err("Failed getting option name for key")?;
                 let mut ini_section = ini.with_section(ini_section_name);
                 ini_section.set(key, val.clone());
+                if !written_keys.insert(key) {
+                    bail!("Overrwritten key {key}, duplicate write to same key");
+                }
             }
         }
+
         for property in &group.properties {
             let mut ini_section = ini.with_section(ini_section_name);
             if ini_section.get(&property.name).is_some() {
+                continue;
+            }
+            if written_keys.contains(property.name.as_str()) {
                 continue;
             }
             let mut ini_section = ini.with_section(ini_section_name);
             ini_section.set(&property.name, &property.default_value);
         }
     }
-    println!("{ini:#?}");
 
     let mut f = std::fs::OpenOptions::new()
         .write(true)
