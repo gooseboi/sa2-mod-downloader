@@ -15,7 +15,7 @@ use color_eyre::{
 use crossterm::style::Stylize;
 use tokio::{
     fs,
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    io::{self, AsyncReadExt as _, AsyncWriteExt as _},
 };
 
 mod config_schema;
@@ -65,24 +65,47 @@ async fn get_mod_name(path: &Utf8Path) -> Result<String> {
         .to_owned())
 }
 
-async fn _write_output(
-    output_path: &Utf8Path,
-    mod_name: &str,
-    _mod_path: &Utf8Path,
-    file_ext: &str,
-) -> Result<()> {
-    let _stylized_name = mod_name.italic().cyan();
+// TODO: Support writing a bunch of archive files instead of just copying the directories
+// over
+async fn write_output(output_path: &Utf8Path, mod_name: &str, mod_path: &Utf8Path) -> Result<()> {
+    // TODO: What if it has an invalid character?
+    let mod_output_path = output_path.join(mod_name);
+    for f in walkdir::WalkDir::new(mod_path) {
+        let f = f.wrap_err("Failed reading files in mod directory")?;
+        let path = Utf8Path::from_path(f.path()).wrap_err("Path should be UTF-8")?;
+        let relative_path = path
+            .strip_prefix(mod_path)
+            .wrap_err("Path should be a child of its parent")?;
+        let output_relative_path = mod_output_path.join(relative_path);
+        let parent = output_relative_path
+            .parent()
+            .wrap_err("Directory should have a parent")?;
+        std::fs::create_dir_all(parent).wrap_err("Failed creating parent dir")?;
+        if path.is_dir() {
+            std::fs::create_dir_all(&output_relative_path)
+                .wrap_err_with(|| format!("Failed creating directory {output_relative_path}"))?;
+        } else if path.is_file() {
+            let mut orig_file = fs::OpenOptions::new()
+                .read(true)
+                .open(path)
+                .await
+                .wrap_err("Failed opening original file")?;
+            let mut new_file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(output_relative_path)
+                .await
+                .wrap_err("Failed opening original file")?;
+            io::copy(&mut orig_file, &mut new_file)
+                .await
+                .wrap_err("Failed copying contents to new file")?;
+        } else {
+            bail!("Path {path} was not a file nor a directory");
+        }
+    }
 
-    let fname = output_path.join(mod_name).with_extension(file_ext);
-    let _file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(fname)
-        .await
-        .wrap_err_with(|| format!("Failed opening output file for {mod_name}"))?;
-
-    todo!()
+    Ok(())
 }
 
 fn is_valid_config(group: &config_schema::Group, opts: &HashMap<String, OptValue>) -> Result<()> {
@@ -209,7 +232,7 @@ async fn generate_manifest(mod_path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
-async fn setup(cli: &Cli) -> Result<(ClientWithMiddleware, ModList, Utf8PathBuf)> {
+async fn setup(cli: &Cli) -> Result<(ClientWithMiddleware, ModList, Utf8PathBuf, Utf8PathBuf)> {
     let file = tokio::fs::read_to_string(&cli.input_file)
         .await
         .wrap_err("Failed to read file")?;
@@ -241,14 +264,15 @@ async fn setup(cli: &Cli) -> Result<(ClientWithMiddleware, ModList, Utf8PathBuf)
         ))
         .build();
 
-    Ok((client, list, cache_dir))
+    Ok((client, list, cache_dir, output_path.clone()))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let (client, modlist, cache_dir) = setup(&cli).await.wrap_err("Failed setting up")?;
+    let (client, modlist, cache_dir, output_path) =
+        setup(&cli).await.wrap_err("Failed setting up")?;
 
     let now = std::time::Instant::now();
     let mod_total = modlist.mods.len();
@@ -295,6 +319,10 @@ async fn main() -> Result<()> {
         generate_manifest(mod_path)
             .await
             .wrap_err("Failed generating manifest for mod")?;
+
+        write_output(&output_path, &mod_name, mod_path)
+            .await
+            .wrap_err("Failed writing output to output path")?;
 
         println!();
         println!();
